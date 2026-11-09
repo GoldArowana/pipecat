@@ -1,0 +1,127 @@
+name: Pipecat Soniox reconnect exact-source witness
+on:
+  push:
+    branches: [validation-pipecat-soniox-reconnect-b8586ba8]
+permissions:
+  contents: read
+jobs:
+  package-witness:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: source
+    env:
+      SOURCE_REPO: pipecat-ai/pipecat
+      SOURCE_SHA: fb7c9c5cff8e77b51e7089aee2df4a1e3ab5f17d
+      SOURCE_TREE: e595e9578758275adfc39d83476aa325af8c439a
+      FIXTURE_SHA256: "c717e78157ca3fbbe944fb61bc5ddff108dc774735e4a2b8cbf1ae76f8c5280a"
+      VERIFIER_SHA256: "8678b6bbaf29d828415ed73b62a44b2d42134f13c13beefddf99b725a82d475a"
+      UV_NO_CACHE: "1"
+      PYTHONDONTWRITEBYTECODE: "1"
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - name: Checkout validation fixture
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          path: harness
+          persist-credentials: false
+      - name: Checkout exact upstream source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: pipecat-ai/pipecat
+          ref: fb7c9c5cff8e77b51e7089aee2df4a1e3ab5f17d
+          path: source
+          persist-credentials: false
+      - name: Verify exact source and harness identity
+        run: |
+          set -euo pipefail
+          test "$(git remote get-url origin)" = "https://github.com/$SOURCE_REPO"
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          test "$(git rev-parse 'HEAD^{tree}')" = "$SOURCE_TREE"
+          test "$(git -C ../harness rev-parse HEAD)" = "$GITHUB_SHA"
+          git diff HEAD --exit-code
+          fixture_dir="$GITHUB_WORKSPACE/harness/validation/pipecat-soniox"
+          printf '%s  %s\n' "$FIXTURE_SHA256" "$fixture_dir/test_soniox_reconnect_witness.py" | sha256sum -c -
+          printf '%s  %s\n' "$VERIFIER_SHA256" "$fixture_dir/verify_soniox_witness.py" | sha256sum -c -
+          printf 'source=%s head=%s tree=%s event=%s\n' "$SOURCE_REPO" "$SOURCE_SHA" "$SOURCE_TREE" "$GITHUB_SHA"
+      - name: Install normal upstream uv
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2
+        with:
+          version: latest
+          enable-cache: false
+      - name: Install normal upstream Python
+        run: uv python install 3.12
+      - name: Bootstrap the upstream test dependencies from the lock
+        run: |
+          uv sync --locked --python 3.12 --group dev \
+            --extra aic \
+            --extra anthropic \
+            --extra aws \
+            --extra aws-nova-sonic \
+            --extra azure \
+            --extra cli \
+            --extra cloudflare \
+            --extra daily \
+            --extra deepgram \
+            --extra google \
+            --extra langchain \
+            --extra livekit \
+            --extra mcp \
+            --extra moq \
+            --extra openai \
+            --extra pgmq \
+            --extra piper \
+            --extra redis \
+            --extra resampy \
+            --extra rime \
+            --extra runner \
+            --extra sagemaker \
+            --extra sarvam \
+            --extra soxr \
+            --extra speechmatics \
+            --extra tracing \
+            --extra typesafe \
+            --extra websocket
+          git diff HEAD --exit-code
+      - name: Run stock Soniox tests and fixture controls
+        run: |
+          set -euo pipefail
+          export PYTHONPATH="$PWD/src:$PWD"
+          uv run --no-sync python - <<'PY'
+          import os
+          from pathlib import Path
+          from pipecat.services.soniox import stt
+          assert Path(stt.__file__).resolve() == Path.cwd() / "src/pipecat/services/soniox/stt.py"
+          assert not os.environ.get("SONIOX_API_KEY"), "Unexpected provider credential"
+          print("Exact source package imported", stt.__file__)
+          PY
+          fixture="$GITHUB_WORKSPACE/harness/validation/pipecat-soniox/test_soniox_reconnect_witness.py"
+          timeout --kill-after=5s 120s uv run --no-sync pytest -n 0 -p no:cacheprovider \
+            -s -vv tests/test_soniox_stt.py \
+            "$fixture::test_reconnect_retires_in_flight_agent_text[active-interruptible-reconnect]" \
+            "$fixture::test_reconnect_retires_in_flight_agent_text[same-socket]"
+      - name: Run and verify the exact base regression
+        run: |
+          set -euo pipefail
+          export PYTHONPATH="$PWD/src:$PWD"
+          fixture_dir="$GITHUB_WORKSPACE/harness/validation/pipecat-soniox"
+          junit="$RUNNER_TEMP/soniox-reconnect-witness.xml"
+          log="$RUNNER_TEMP/soniox-reconnect-witness.log"
+          set +e
+          timeout --kill-after=5s 90s uv run --no-sync pytest -n 0 -p no:cacheprovider -s -vv \
+            --junitxml="$junit" \
+            "$fixture_dir/test_soniox_reconnect_witness.py::test_reconnect_retires_in_flight_agent_text[active-uninterruptible-reconnect]" \
+            | tee "$log"
+          result=${PIPESTATUS[0]}
+          set -e
+          test "$result" -eq 1
+          uv run --no-sync python "$fixture_dir/verify_soniox_witness.py" "$log" "$junit"
+      - name: Always verify exact upstream checkout
+        if: always()
+        run: |
+          set -euo pipefail
+          test "$(git remote get-url origin)" = "https://github.com/$SOURCE_REPO"
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          test "$(git rev-parse 'HEAD^{tree}')" = "$SOURCE_TREE"
+          git diff HEAD --exit-code
