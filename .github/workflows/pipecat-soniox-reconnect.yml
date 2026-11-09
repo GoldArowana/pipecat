@@ -97,7 +97,7 @@ jobs:
           print("Exact source package imported", stt.__file__)
           PY
           fixture="$GITHUB_WORKSPACE/harness/validation/pipecat-soniox/test_soniox_reconnect_witness.py"
-          timeout --kill-after=5s 120s uv run --no-sync pytest -n 0 -p no:cacheprovider \
+          timeout --kill-after=5s 120s uv run --no-sync pytest -c "$PWD/pyproject.toml" --rootdir="$PWD" -n 0 -p no:cacheprovider \
             -s -vv tests/test_soniox_stt.py \
             "$fixture::test_reconnect_retires_in_flight_agent_text[active-interruptible-reconnect]" \
             "$fixture::test_reconnect_retires_in_flight_agent_text[same-socket]"
@@ -109,7 +109,7 @@ jobs:
           junit="$RUNNER_TEMP/soniox-reconnect-witness.xml"
           log="$RUNNER_TEMP/soniox-reconnect-witness.log"
           set +e
-          timeout --kill-after=5s 90s uv run --no-sync pytest -n 0 -p no:cacheprovider -s -vv \
+          timeout --kill-after=5s 90s uv run --no-sync pytest -c "$PWD/pyproject.toml" --rootdir="$PWD" -n 0 -p no:cacheprovider -s -vv \
             --junitxml="$junit" \
             "$fixture_dir/test_soniox_reconnect_witness.py::test_reconnect_retires_in_flight_agent_text[active-uninterruptible-reconnect]" \
             | tee "$log"
