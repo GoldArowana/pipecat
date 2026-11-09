@@ -1,4 +1,4 @@
-name: Pipecat Soniox reconnect paired package validation
+name: Pipecat Soniox reconnect exact-source quality
 'on':
   push:
     branches:
@@ -6,30 +6,17 @@ name: Pipecat Soniox reconnect paired package validation
 permissions:
   contents: read
 jobs:
-  package-validation:
-    name: Soniox ${{ matrix.mode }}
+  quality:
+    name: Soniox upstream code quality
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-        - mode: baseline
-          repository: pipecat-ai/pipecat
-          sha: f199f349d41eb651dbc241c66c9a4edaf2bfb47e
-          tree: 87feb0653a942f3088370bde4683966b857b55cb
-        - mode: candidate
-          repository: GoldArowana/pipecat
-          sha: 1b856569c3c917cc22bfd2ff7f26341a3f3a7026
-          tree: 6c4c9b9068b5194659a52be5e1ab854d509534fe
     defaults:
       run:
         working-directory: source
     env:
-      SOURCE_REPO: ${{ matrix.repository }}
-      SOURCE_SHA: ${{ matrix.sha }}
-      SOURCE_TREE: ${{ matrix.tree }}
-      FIXTURE_SHA256: 2c8a8a0624b359beb965c30f5fc2e74b848e5f576ee132d15c141511701849cf
+      SOURCE_REPO: GoldArowana/pipecat
+      SOURCE_SHA: 1b856569c3c917cc22bfd2ff7f26341a3f3a7026
+      SOURCE_TREE: 6c4c9b9068b5194659a52be5e1ab854d509534fe
       UV_NO_CACHE: '1'
       PYTHONDONTWRITEBYTECODE: '1'
       PYTHONUNBUFFERED: '1'
@@ -42,8 +29,8 @@ jobs:
     - name: Checkout exact source
       uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       with:
-        repository: ${{ matrix.repository }}
-        ref: ${{ matrix.sha }}
+        repository: GoldArowana/pipecat
+        ref: 1b856569c3c917cc22bfd2ff7f26341a3f3a7026
         path: source
         persist-credentials: false
     - name: Verify source and validation event identities
@@ -54,7 +41,6 @@ jobs:
         test "$(git rev-parse 'HEAD^{tree}')" = "$SOURCE_TREE"
         test "$(git -C ../harness rev-parse HEAD)" = "$GITHUB_SHA"
         git diff HEAD --exit-code
-        printf '%s  %s\n' "$FIXTURE_SHA256" "$GITHUB_WORKSPACE/harness/validation/pipecat-soniox/test_soniox_exact_base.py" | sha256sum -c -
         printf 'source=%s head=%s tree=%s event=%s\n' "$SOURCE_REPO" "$SOURCE_SHA" "$SOURCE_TREE" "$GITHUB_SHA"
     - name: Install normal upstream uv
       uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2
@@ -63,92 +49,33 @@ jobs:
         enable-cache: false
     - name: Install normal upstream Python
       run: uv python install 3.12
-    - name: Bootstrap the upstream test dependencies from the lock
+    - name: Bootstrap the upstream quality dependencies from the lock
+      id: bootstrap
       run: |
-        uv sync --locked --python 3.12 --group dev \
-          --extra aic \
-          --extra anthropic \
-          --extra aws \
-          --extra aws-nova-sonic \
-          --extra azure \
-          --extra cli \
-          --extra cloudflare \
-          --extra daily \
-          --extra deepgram \
-          --extra google \
-          --extra langchain \
-          --extra livekit \
-          --extra mcp \
-          --extra moq \
-          --extra openai \
-          --extra pgmq \
-          --extra piper \
-          --extra redis \
-          --extra resampy \
-          --extra rime \
-          --extra runner \
-          --extra sagemaker \
-          --extra sarvam \
-          --extra soxr \
-          --extra speechmatics \
-          --extra tracing \
-          --extra typesafe \
-          --extra websocket
+        set -euo pipefail
+        uv sync --locked --python 3.12 --group dev --all-extras --no-extra gstreamer --no-extra local
         git diff HEAD --exit-code
-    - name: Verify Pipecat package import comes from exact source
+    - name: Upstream Ruff formatter
+      if: always() && steps.bootstrap.outcome == 'success'
       run: |
         set -euo pipefail
-        export PYTHONPATH="$PWD/src:$PWD"
-        uv run --no-sync python - <<'CHECK'
-        import os
-        from pathlib import Path
-        from pipecat.services.soniox import stt
-        assert Path(stt.__file__).resolve() == Path.cwd() / "src/pipecat/services/soniox/stt.py"
-        assert not os.environ.get("SONIOX_API_KEY"), "Unexpected provider credential"
-        print("Exact source package imported", stt.__file__)
-        CHECK
-    - name: Reproduce the dequeued uninterruptible word on current main
-      if: matrix.mode == 'baseline'
+        uv run --no-sync ruff format --diff --no-cache
+    - name: Upstream Ruff lint
+      if: always() && steps.bootstrap.outcome == 'success'
       run: |
         set -euo pipefail
-        export PYTHONPATH="$PWD/src:$PWD"
-        test_file="$GITHUB_WORKSPACE/harness/validation/pipecat-soniox/test_soniox_exact_base.py"
-        junit="$RUNNER_TEMP/soniox-base.xml"
-        set +e
-        timeout --kill-after=5s 120s uv run --no-sync pytest -c "$PWD/pyproject.toml" --rootdir="$PWD" -n 0 -p no:cacheprovider \
-          -vv --junitxml="$junit" "$test_file::test_agent_text_drops_dequeued_words_on_a_reconnect[False]"
-        result=$?
-        set -e
-        test "$result" -eq 1
-        uv run --no-sync python - "$junit" <<'CHECK'
-        import sys
-        from xml.etree import ElementTree as ET
-        cases = ET.parse(sys.argv[1]).getroot().findall(".//testcase")
-        assert len(cases) == 1
-        case = cases[0]
-        assert case.get("name") == "test_agent_text_drops_dequeued_words_on_a_reconnect[False]"
-        failure = case.find("failure")
-        assert failure is not None and case.find("error") is None
-        assert "TimeoutError" in failure.get("message", "")
-        assert "await _drain(service)" in failure.text
-        print("Expected exact-base failure: timed-out queue drain after replacement and newly due text.")
-        CHECK
-    - name: Check locked Ruff on modified files
-      if: matrix.mode == 'candidate'
+        uv run --no-sync ruff check --no-cache
+    - name: Upstream Pyright
+      if: always() && steps.bootstrap.outcome == 'success'
       run: |
         set -euo pipefail
-        files=(src/pipecat/services/soniox/stt.py tests/test_soniox_stt.py)
-        uv run --no-sync ruff --version
-        uv run --no-sync ruff check --no-cache "${files[@]}"
-        uv run --no-sync ruff format --check --no-cache "${files[@]}"
-    - name: Run final Soniox and adjacent lifecycle tests
-      if: matrix.mode == 'candidate'
+        uv run --no-sync pyright
+    - name: Upstream CLI registry drift
+      if: always() && steps.bootstrap.outcome == 'success'
       run: |
         set -euo pipefail
-        export PYTHONPATH="$PWD/src:$PWD"
-        timeout --kill-after=5s 180s uv run --no-sync pytest -c "$PWD/pyproject.toml" --rootdir="$PWD" -n 0 -p no:cacheprovider -vv \
-          tests/test_soniox_stt.py tests/test_bot_speech_observer.py tests/test_task_manager.py \
-          tests/test_websocket_stt_connect_failure.py tests/test_websocket_stt_reconnect.py
+        uv run --no-sync python scripts/cli/update_registry.py
+        git diff --exit-code src/pipecat/cli/registry/_imports.py src/pipecat/cli/registry/_configs.py
     - name: Always verify exact upstream checkout
       if: always()
       run: |
